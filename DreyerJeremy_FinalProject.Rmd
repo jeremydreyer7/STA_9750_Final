@@ -1,0 +1,211 @@
+---
+title: "Final Project"
+author: "Jeremy Dreyer"
+output: word_document
+---
+
+# Intro: 
+
+For the basis of my final project I wanted to find a dataset that I thought would be interesting. I decided to choose a dataset from the City of New York that has information about evictions. Specifically I wanted to look at a couple of things. First I wanted to see if there was any relationship between evictions by zip code and average age, median household income, or ethnicity (white vs non-white). I specifically wanted to look at these three relationships because income and ethnicity are somewhat self explanitory because we always hear about these being indicators on social status which goes hand in hand with evictions. But I also wanted to specifically look and see if there was any relationship between age and evictions because, I thought that possibly a younger zip code might have a higher eviction rate because younger people might try to live above their means and end up being evicted because of it. Secondly, because there is now eviction data in the post COVID world, I wanted to see if there were any differences in the pre and post COVID world. 
+```{r setup, warning=FALSE, message=FALSE}
+library(rvest)
+library(sf)
+library(tidyverse)
+library(jsonlite)
+library(tidycensus)
+```
+
+## Let's first start off by grabbing the data from the City of New York and have a rough overview of it. 
+
+So to begin I grabbed 5000 records, I did this because I wanted to ensure that I grabbed about 6 years worth of data. I did this so the amount of time would be split in half with half of it being in the pre-COVID era and half being post-COVID. As you can see here the data ranges from January of 2017 to December 2022. 
+```{r}
+evictions = fromJSON("https://data.cityofnewyork.us/resource/6z8x-wfk4.json?$limit=5000")
+evictions$correctDate = as.Date(evictions$executed_date)
+summary(evictions$correctDate)
+```
+
+I then split the data into two data frames, one for evictions done before January 20, 2020 (the day the first confirmed COVID case was in the United States) and one for after. This is done to see if COVID had any impact on the evictions trend. Out of the 5000 evictions we downloaded, 4509 were from before January 20, 2020 and 491 from after. This drastic difference in number of evictions probably has something to do with the eviction moratorium that occurred as a result of the pandemic which has since been lifted.
+```{r}
+evictionsBC = subset(evictions, correctDate < (max(evictions$correctDate) - 1060))
+
+evictionsAC = evictions %>% filter(correctDate >= max(evictions$correctDate) - 1060)
+```
+Now I grouped the data frames by the zip code so that way we can get the total number of evictions per zip code. We see that there is a drastic difference in the maximum number of evictions per zip code (pre-COVID maximum was 144 evictions, while post-COVID was only 14 evictions). But we also see that the number of zip codes is different. In the pre-COVID era there were 180 zip codes that had evictions in this time frame, in the post-COVID era there were only 137 zip codes that reported at least one eviction. 
+```{r}
+evictionsBC = evictionsBC %>% group_by(eviction_zip) %>% count()
+summary(evictionsBC)
+evictionsAC = evictionsAC %>% group_by(eviction_zip) %>% count()
+summary(evictionsAC)
+```
+
+I next wanted to be able to visualize the number of evictions on the map of NYC. As you can see below the hot spots for evictions are relatively similar being the Bronx and a portion of Brooklyn. Just a note, the total evictions after COVID by zip code map has missing zip codes due to there not being eviction data for those areas as discussed in the results above.
+```{r}
+NYCmap = st_read("C:/Users/jdfis/OneDrive/Desktop/Baruch Schoolwork/Fall 2022/STA 9750 - Software Tools for Data Analysis/Datasets/ZIP_CODE_040114.shp", quiet = TRUE)
+NYCMapChr = mutate(NYCmap, eviction_zip = as.character(ZIPCODE))
+NYCMapZip = select(NYCMapChr, eviction_zip, geometry)
+
+evictionsBC = merge(NYCMapZip, evictionsBC, by="eviction_zip")
+evictionsBC = evictionsBC %>% rename(total_evictions = n)
+
+
+evictionsAC = merge(NYCMapZip, evictionsAC, by="eviction_zip")
+evictionsAC = evictionsAC %>% rename(total_evictions = n)
+
+plot(evictionsBC["total_evictions"], main = "Total Evictions Before Covid by Zip Code")
+plot(evictionsAC["total_evictions"], main = "Total Evictions After Covid by Zip Code")
+```
+
+
+
+# Getting additional information and Analysis:
+
+Now that we have looked at the eviction data set a little we will now add in additional information to our data set from the US census. This bit specifically grabs information about the ethnicity break down and population of zip codes.
+```{r, message=FALSE}
+census_api_key("aa512886c5449a582d837da8d3a07af66a043fe5", install=TRUE, overwrite=T)
+censusData = load_variables(2020, "acs5", cache=T)
+vars = c('B02001_002')
+ethnicityData = get_acs(geography = "zcta", variables = vars, geometry = FALSE)
+ethnicityData = ethnicityData %>% rename(whiteAloneCount = estimate)
+ethnicityData$eviction_zip = sub("ZCTA5 ","",ethnicityData$NAME)
+
+evictionsBC = merge(evictionsBC, ethnicityData, by="eviction_zip")
+evictionsAC = merge(evictionsAC, ethnicityData, by="eviction_zip")
+
+censusData = load_variables(2020, "acs5", cache=T)
+populationData = get_acs(geography = "zcta", variables = 'B01003_001', geometry = FALSE)
+populationData$eviction_zip = sub("ZCTA5 ", "", populationData$NAME)
+populationData = populationData %>% rename(population = estimate)
+populationData = populationData %>% select('eviction_zip', 'population')
+
+evictionsBC = merge(evictionsBC, populationData, by="eviction_zip")
+evictionsAC = merge(evictionsAC, populationData, by="eviction_zip")
+```
+
+Below we can see the eviction rate of the top 5 zip codes pre and post COVID. You can see there is a drastic difference in the eviction rate as well, not just the total number of evictions difference we saw earlier. 
+```{r}
+evictionsBC$evictionRate = (evictionsBC$total_evictions / evictionsBC$population) * 100
+evictionsAC$evictionRate = (evictionsAC$total_evictions / evictionsAC$population) * 100
+
+evictionsBC = evictionsBC %>% arrange(desc(evictionRate))
+head(evictionsBC$evictionRate)
+evictionsAC = evictionsAC %>% arrange(desc(evictionRate))
+head(evictionsAC$evictionRate)
+```
+
+Below we see the ethnicity by zip codes. Note the actual population is not different, but the percentages are because the difference in zip codes discussed earlier. 
+```{r}
+evictionsBC$whiteAloneRate = (evictionsBC$whiteAloneCount / evictionsBC$population) * 100
+evictionsAC$whiteAloneRate = (evictionsAC$whiteAloneCount / evictionsAC$population) * 100
+
+evictionsBC = evictionsBC %>% arrange(desc(whiteAloneRate))
+head(evictionsBC$whiteAloneRate)
+evictionsAC = evictionsAC %>% arrange(desc(whiteAloneRate))
+head(evictionsAC$whiteAloneRate)
+```
+Below is a graph that shows the relationship between the eviction rate and ethnicity data in the pre-COVID era. You can see that there is a somewhat linear relationship between the two. In general as the whiteAloneRate increases, the evictionRate decreases.
+```{r}
+plot(evictionRate~whiteAloneRate, data = evictionsBC)
+```
+
+However, when we look at the same graph for the post-COVID era the relationship does not appear to be as strong. This lack of a linear relationship will show up in the following analysis as well. 
+```{r}
+plot(evictionRate~whiteAloneRate, data = evictionsAC)
+```
+
+Below is the results of a simple linear regression between eviction rate and the whiteAloneRate in the pre-COVID era. As we saw with the graph the relationship between the two appears to be statistically relevant as the P-value is very close to zero. We can also see that the r-squared value is 0.2936 which means roughly 29% of the variation in eviction rate is caused by whiteAloneRate.
+```{r}
+BClm1 = lm(evictionRate ~ whiteAloneRate, data = evictionsBC)
+summary(BClm1)
+```
+
+Below is the results of a simple linear regression between eviction rate and the whiteAloneRate in the post-COVID era. As we saw with the graph the relationship between the two appears to be weaker than the relationship in the pre-COVID era as the P-value is much greater with a value of 0.126. This p-value indicates the relationship is still statistically relevant, however it is not as strong as the almost zero value we had in the pre-COVID era. 
+```{r}
+AClm1 = lm(evictionRate ~ whiteAloneRate, data = evictionsAC)
+summary(AClm1)
+```
+
+Now income data is being added into the data set for analysis. 
+```{r}
+vars = c(poverty = 'B19019_001E')
+incomeData = get_acs(geography = "zcta", variables = vars, geometry = FALSE)
+incomeData$eviction_zip = sub("ZCTA5 ", "", incomeData$NAME)
+incomeData = incomeData %>% rename(income = estimate)
+incomeData = na.omit(incomeData)
+incomeData = incomeData %>% group_by(eviction_zip) %>% summarise(medianIncome = mean(income), .groups = 'drop')
+evictionsBC = merge(evictionsBC, incomeData, by="eviction_zip")
+evictionsAC = merge(evictionsAC, incomeData, by="eviction_zip")
+```
+
+
+Below is a graph that shows the relationship between the eviction rate and income data in the pre-COVID era. You can see that there is a somewhat linear relationship between the two. In general as the median income increases, the evictionRate decreases.
+```{r}
+plot(evictionRate~medianIncome, data = evictionsBC)
+```
+
+However, when we look at the same graph for the post-COVID era there appears to not really be a relationship between the two. This lack of linear relationship will be shown in the regression analysis next.
+```{r}
+plot(evictionRate~medianIncome, data = evictionsAC)
+```
+
+Below is the results of a simple linear regression between eviction rate and the medianIncome in the pre-COVID era. As we saw with the graph the relationship between the two appears to be statistically relevant as the P-value is very close to zero. We can also see that the r-squared value is 0.2723 which means roughly 27.2% of the variation in eviction rate is caused by medianIncome. 
+```{r}
+BClm2 = lm(evictionRate ~ medianIncome, data = evictionsBC)
+summary(BClm2)
+```
+
+Below is the results of a simple linear regression between eviction rate and the medianIncome in the post-COVID era. As we saw with the graph the relationship between the two appears to be weaker than the relationship in the pre-COVID era as the P-value is much greater with a value of 0.622. This p-value indicates the relationship not statistically relevant which is a drastic change compared to the pre-COVID era. This indicates a rather drastic shift in the relationship between evictions and income in the post-COVID era.
+```{r}
+AClm2 = lm(evictionRate ~ medianIncome, data = evictionsAC)
+summary(AClm2)
+```
+
+Finally age data is being added into the data set to analyze its relationship with eviction rate.
+```{r}
+vars = c(age = 'B01002_001')
+ageData = get_acs(geography = "zcta", variables = vars, geometry = FALSE)
+ageData$eviction_zip = sub("ZCTA5 ","",ageData$NAME)
+ageData$ageEstimate = ageData$estimate
+ageData = ageData %>% select('eviction_zip', 'ageEstimate')
+evictionsBC = merge(evictionsBC, ageData, by="eviction_zip")
+evictionsAC = merge(evictionsAC, ageData, by="eviction_zip")
+```
+
+Below is a graph that shows the relationship between the eviction rate and average age in the pre-COVID era. You can see that there is a somewhat linear relationship between the two. In general as the average age increases, the evictionRate decreases.
+```{r}
+plot(evictionRate~ageEstimate, data = evictionsBC)
+```
+
+However, when we look at the same graph for the post-COVID era the relationship does not appear to be as strong. This lack of a linear relationship will show up in the following analysis as well. 
+```{r}
+plot(evictionRate~ageEstimate, data = evictionsAC)
+```
+
+Below is the results of a simple linear regression between eviction rate and the ageEstimate in the pre-COVID era. As we saw with the graph the relationship between the two appears to be statistically relevant as the P-value is very close to zero. We can also see that the r-squared value is 0.1254 which means roughly 12.5% of the variation in eviction rate is caused by the ageEstimate variable.
+```{r}
+BClm3 = lm(evictionRate ~ ageEstimate, data = evictionsBC)
+summary(BClm3)
+```
+Below is the results of a simple linear regression between eviction rate and the ageEstimate in the post-COVID era. As we saw with the graph the relationship between the two appears to be weaker than the relationship in the pre-COVID era as the P-value is much greater with a value of 0.11715. This p-value still indicates the relationship is significant as it is below .001. The r-squared value is also 0.01782 which indicates that roughly 1.7% of the variation in eviction rate can be attributed to the ageEstimate variable. The low r-squared value and the low coefficient in front of ageEstimate indicates that the relationship is not ver clear from a linear model.
+```{r}
+AClm3 = lm(evictionRate ~ ageEstimate, data = evictionsAC)
+summary(AClm3)
+```
+
+# Additional images
+
+Now that we have done all of this analysis and added in some additional data into our data set. I want to go back to the map of NYC and compare the total evictions with the eviction rate to see if it differs. As we see below in both the pre and post COVID eras the eviction rate appears to show a more clear picture for evictions in NYC. We see that the hot spots for evictions are still there in the eviction rate, but not as centralized. This is shown more drastically in the post-COVID map as the hot spots almost disappear from the map. 
+```{r}
+plot(evictionsBC["total_evictions"], main = "Total Evictions Before Covid by Zip Code")
+plot(evictionsBC["evictionRate"], main = "Eviction Rate Before Covid by Zip Code")
+```
+
+```{r}
+plot(evictionsAC["total_evictions"], main = "Total Evictions After Covid by Zip Code")
+plot(evictionsAC["evictionRate"], main = "Eviction Rate After Covid by Zip Code")
+```
+
+# Closing Thoughts: 
+
+Going into this assignment, I thought there might be a relationship negative relationship between ethnicity, and income on evictions. I was also interested in seeing if there was a relationship between age and evictions because I thought that possibly a younger zip code might have a higher eviction rate because younger people might try to live above their means and end up being evicted because of it. I was also interested to see if there was any difference in the relationships between all of the variables comparing pre and post COVID times. I assumed there might be some difference in the way the relationships impacted each other pre and post COVID, but I did not know if they would become stronger or weaker and by how much. In doing the analysis I was surprised by how drastically different the relationships were. For example, with the ethnicity and income relationships both of them had a negative relationship with eviction rate. However, this relationship was not as negative in the post-COVID data and the P-value for both dropped drastically which was interesting. 
+
+
